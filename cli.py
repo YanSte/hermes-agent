@@ -2977,6 +2977,32 @@ class HermesCLI:
             print("  Usage: /personality <name>")
             print()
     
+    def _handle_backup_command(self, cmd: str):
+        """Handle /backup [init|push|pull|status|auto on|off] — git-based config backup."""
+        from hermes_cli.config import backup_command
+
+        parts = cmd.strip().split()
+        subcmd = parts[1].lower() if len(parts) > 1 else "status"
+
+        class _Args:
+            pass
+
+        args = _Args()
+        args.backup_command = subcmd
+
+        if subcmd == "init":
+            args.remote = parts[2] if len(parts) > 2 else None
+        elif subcmd == "auto":
+            if len(parts) < 3 or parts[2].lower() not in ("on", "off"):
+                print("  Usage: /backup auto on|off")
+                return
+            args.state = parts[2].lower()
+
+        try:
+            backup_command(args)
+        except SystemExit:
+            pass
+
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
         import shlex
@@ -3538,6 +3564,8 @@ class HermesCLI:
             self.undo_last()
         elif canonical == "save":
             self.save_conversation()
+        elif canonical == "backup":
+            self._handle_backup_command(cmd_original)
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
         elif canonical == "skills":

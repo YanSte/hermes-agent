@@ -510,3 +510,145 @@ class TestBackupConstants:
 
     def test_cron_line_has_hourly_schedule(self):
         assert BACKUP_CRON_LINE.startswith("0 * * * *")
+
+
+# ---------------------------------------------------------------------------
+# TestSlashBackupCommand
+# ---------------------------------------------------------------------------
+
+class TestSlashBackupCommand:
+    """Tests for the /backup slash command handler in cli.py."""
+
+    def _make_handler(self):
+        """Return a callable that mimics _handle_backup_command without a full CLI instance."""
+        from hermes_cli.config import backup_command
+
+        def handle(cmd: str):
+            parts = cmd.strip().split()
+            subcmd = parts[1].lower() if len(parts) > 1 else "status"
+
+            class _Args:
+                pass
+
+            args = _Args()
+            args.backup_command = subcmd
+
+            if subcmd == "init":
+                args.remote = parts[2] if len(parts) > 2 else None
+            elif subcmd == "auto":
+                args.state = parts[2].lower() if len(parts) > 2 else None
+
+            try:
+                backup_command(args)
+            except SystemExit:
+                pass
+
+        return handle
+
+    def test_slash_backup_defaults_to_status(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _seed_hermes_home(tmp_path)
+        backup_command(_make_args("init", remote=None))
+
+        handle = self._make_handler()
+        handle("/backup")
+
+        captured = capsys.readouterr()
+        assert "config backup status" in captured.out.lower() or "last commit" in captured.out.lower()
+
+    def test_slash_backup_status(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _seed_hermes_home(tmp_path)
+        backup_command(_make_args("init", remote=None))
+
+        handle = self._make_handler()
+        handle("/backup status")
+
+        captured = capsys.readouterr()
+        assert "last commit" in captured.out.lower()
+
+    def test_slash_backup_init(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _seed_hermes_home(tmp_path)
+
+        handle = self._make_handler()
+        handle("/backup init")
+
+        assert (tmp_path / ".git").is_dir()
+
+    def test_slash_backup_init_with_remote(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _seed_hermes_home(tmp_path)
+
+        handle = self._make_handler()
+        handle("/backup init https://github.com/YanSte/hermes-config")
+
+        result = _git(["remote", "get-url", "origin"], cwd=tmp_path)
+        assert "hermes-config" in result.stdout
+
+    def test_slash_backup_push(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        _seed_hermes_home(tmp_path)
+        backup_command(_make_args("init", remote=None))
+        (tmp_path / "config.yaml").write_text("model:\n  default: slash-push\n")
+
+        handle = self._make_handler()
+        handle("/backup push")
+
+        captured = capsys.readouterr()
+        assert "snapshot" in captured.out.lower()
+
+    def test_slash_backup_auto_on(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        cron_written = []
+
+        def fake_run(cmd, **kwargs):
+            if cmd == ["crontab", "-l"]:
+                return SimpleNamespace(returncode=1, stdout="", stderr="")
+            if cmd[0] == "crontab" and cmd[1] == "-":
+                cron_written.append(kwargs.get("input", ""))
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return subprocess.run(cmd, **kwargs)
+
+        with patch("hermes_cli.config.subprocess.run", side_effect=fake_run):
+            handle = self._make_handler()
+            handle("/backup auto on")
+
+        assert cron_written
+        assert BACKUP_CRON_MARKER in cron_written[0]
+        captured = capsys.readouterr()
+        assert "enabled" in captured.out.lower()
+
+    def test_slash_backup_auto_off(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        existing = f"{BACKUP_CRON_LINE}  {BACKUP_CRON_MARKER}\n"
+
+        cron_written = []
+
+        def fake_run(cmd, **kwargs):
+            if cmd == ["crontab", "-l"]:
+                return SimpleNamespace(returncode=0, stdout=existing, stderr="")
+            if cmd[0] == "crontab" and cmd[1] == "-":
+                cron_written.append(kwargs.get("input", ""))
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return subprocess.run(cmd, **kwargs)
+
+        with patch("hermes_cli.config.subprocess.run", side_effect=fake_run):
+            handle = self._make_handler()
+            handle("/backup auto off")
+
+        assert cron_written
+        assert BACKUP_CRON_MARKER not in cron_written[0]
+        captured = capsys.readouterr()
+        assert "disabled" in captured.out.lower()
+
+    def test_slash_backup_in_command_registry(self):
+        from hermes_cli.commands import resolve_command
+        cmd = resolve_command("backup")
+        assert cmd is not None
+        assert cmd.name == "backup"
+        assert "init" in cmd.subcommands
+        assert "push" in cmd.subcommands
+        assert "pull" in cmd.subcommands
+        assert "status" in cmd.subcommands
