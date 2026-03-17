@@ -27,6 +27,15 @@ hermes config backup auto on
 hermes config backup status
 ```
 
+You can also use it directly in chat:
+
+```
+/backup init
+/backup auto on
+/backup status
+/backup push
+```
+
 That's it. From this point every config change is automatically captured once per hour.
 
 ---
